@@ -122,6 +122,7 @@ type RecommendConfig struct {
 	UserNeighbors   NeighborsConfig         `mapstructure:"user_neighbors"`
 	ItemNeighbors   NeighborsConfig         `mapstructure:"item_neighbors"`
 	Collaborative   CollaborativeConfig     `mapstructure:"collaborative"`
+	Ranker          RankerConfig            `mapstructure:"ranker"`
 	Replacement     ReplacementConfig       `mapstructure:"replacement"`
 	Offline         OfflineConfig           `mapstructure:"offline"`
 	Online          OnlineConfig            `mapstructure:"online"`
@@ -169,6 +170,10 @@ type CollaborativeConfig struct {
 	ModelSearchEpoch      int           `mapstructure:"model_search_epoch" validate:"gt=0"`
 	ModelSearchTrials     int           `mapstructure:"model_search_trials" validate:"gt=0"`
 	EnableModelSizeSearch bool          `mapstructure:"enable_model_size_search"`
+}
+
+type RankerConfig struct {
+	Type string `mapstructure:"type" json:"type" validate:"oneof=fm chat"`
 }
 
 type ReplacementConfig struct {
