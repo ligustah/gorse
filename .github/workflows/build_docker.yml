@@ -35,14 +35,3 @@ jobs:
           tags: ligustah/${{ matrix.image }}:nightly
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-      - name: Resolve Images on Description
-        run: |
-          sed -i -E "s/src=\"assets\//src=\"https:\/\/github.com\/gorse-io\/gorse\/raw\/master\/assets\//" README.md
-          
-      - name: Update DockerHub Description
-        uses: peter-evans/dockerhub-description@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-          repository: ligustah/${{ matrix.image }}
