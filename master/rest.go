@@ -45,7 +45,7 @@ import (
 	"github.com/zhenghaoz/gorse/common/util"
 	"github.com/zhenghaoz/gorse/config"
 	"github.com/zhenghaoz/gorse/model/cf"
-	"github.com/zhenghaoz/gorse/model/click"
+	"github.com/zhenghaoz/gorse/model/ctr"
 	"github.com/zhenghaoz/gorse/protocol"
 	"github.com/zhenghaoz/gorse/server"
 	"github.com/zhenghaoz/gorse/storage/cache"
@@ -181,7 +181,7 @@ func (m *Master) CreateWebService() {
 		Param(ws.QueryParameter("offset", "offset of the list").DataType("int")).
 		Returns(http.StatusOK, "OK", []ScoredItem{}).
 		Writes([]ScoredItem{}))
-	ws.Route(ws.GET("/dashboard/user-to-user/neighbors/{user-id}").To(m.getUserToUser).
+	ws.Route(ws.GET("/dashboard/user-to-user/{name}/{user-id}").To(m.getUserToUser).
 		Doc("get neighbors of a user").
 		Metadata(restfulspec.KeyOpenAPITags, []string{"dashboard"}).
 		Param(ws.PathParameter("user-id", "identifier of the user").DataType("string")).
@@ -512,7 +512,7 @@ type Status struct {
 	MatchingModelFitTime    time.Time
 	MatchingModelScore      cf.Score
 	RankingModelFitTime     time.Time
-	RankingModelScore       click.Score
+	RankingModelScore       ctr.Score
 	UserNeighborIndexRecall float32
 	ItemNeighborIndexRecall float32
 	MatchingIndexRecall     float32
@@ -575,7 +575,7 @@ func (m *Master) getStats(request *restful.Request, response *restful.Response) 
 	if status.LatestItemsUpdateTime, err = m.CacheClient.Get(ctx, cache.Key(cache.GlobalMeta, cache.LastUpdateLatestItemsTime)).Time(); err != nil {
 		log.ResponseLogger(response).Warn("failed to get latest items update time", zap.Error(err))
 	}
-	status.MatchingModelScore = m.rankingScore
+	status.MatchingModelScore = m.collaborativeFilteringModelScore
 	status.RankingModelScore = m.clickScore
 	// read last fit matching model time
 	if status.MatchingModelFitTime, err = m.CacheClient.Get(ctx, cache.Key(cache.GlobalMeta, cache.LastFitMatchingModelTime)).Time(); err != nil {
@@ -636,8 +636,7 @@ func (m *Master) getRates(request *restful.Request, response *restful.Response) 
 	}
 	measurements := make(map[string][]cache.TimeSeriesPoint, len(m.Config.Recommend.DataSource.PositiveFeedbackTypes))
 	for _, feedbackType := range m.Config.Recommend.DataSource.PositiveFeedbackTypes {
-		measurements[feedbackType], err = m.CacheClient.GetTimeSeriesPoints(ctx, cache.Key(PositiveFeedbackRate, feedbackType),
-			time.Now().Add(-24*time.Hour*time.Duration(n)), time.Now())
+		measurements[feedbackType], err = m.CacheClient.GetTimeSeriesPoints(ctx, cache.Key(PositiveFeedbackRate, feedbackType), time.Now().Add(-24*time.Hour*time.Duration(n)), time.Now(), 24*time.Hour)
 		if err != nil {
 			server.InternalServerError(response, err)
 			return
@@ -853,6 +852,7 @@ func (m *Master) GetUser(score cache.Score) (any, error) {
 func (m *Master) getNonPersonalized(request *restful.Request, response *restful.Response) {
 	name := request.PathParameter("name")
 	categories := server.ReadCategories(request)
+	m.SetLastModified(request, response, cache.Key(cache.NonPersonalizedUpdateTime, name))
 	m.SearchDocuments(cache.NonPersonalized, name, categories, m.GetItem, request, response)
 }
 
@@ -860,12 +860,15 @@ func (m *Master) getItemToItem(request *restful.Request, response *restful.Respo
 	name := request.PathParameter("name")
 	itemId := request.PathParameter("item-id")
 	categories := request.QueryParameters("category")
+	m.SetLastModified(request, response, cache.Key(cache.ItemToItemUpdateTime, name, itemId))
 	m.SearchDocuments(cache.ItemToItem, cache.Key(name, itemId), categories, m.GetItem, request, response)
 }
 
 func (m *Master) getUserToUser(request *restful.Request, response *restful.Response) {
 	userId := request.PathParameter("user-id")
-	m.SearchDocuments(cache.UserToUser, cache.Key(cache.Neighbors, userId), nil, m.GetUser, request, response)
+	name := request.PathParameter("name")
+	m.SetLastModified(request, response, cache.Key(cache.UserToUserUpdateTime, name, userId))
+	m.SearchDocuments(cache.UserToUser, cache.Key(name, userId), nil, m.GetUser, request, response)
 }
 
 func (m *Master) importExportUsers(response http.ResponseWriter, request *http.Request) {
