@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	mapset "github.com/deckarep/golang-set/v2"
@@ -101,6 +102,7 @@ type Worker struct {
 	latestRankingModelVersion int64
 	latestClickModelVersion   int64
 	matrixFactorization       *logics.MatrixFactorization
+	matrixFactorizationMutex  sync.RWMutex
 	randGenerator             *rand.Rand
 
 	// peers
@@ -270,7 +272,9 @@ func (w *Worker) Pull() {
 					log.Logger().Error("failed to unmarshal ranking model", zap.Error(err))
 				} else {
 					w.CollaborativeFilteringModel = rankingModel
+					w.matrixFactorizationMutex.Lock()
 					w.matrixFactorization = nil
+					w.matrixFactorizationMutex.Unlock()
 					w.CollaborativeFilteringModelVersion = w.latestRankingModelVersion
 					log.Logger().Info("synced ranking model",
 						zap.String("version", encoding.Hex(w.CollaborativeFilteringModelVersion)))
@@ -532,20 +536,24 @@ func (w *Worker) Recommend(users []data.User) {
 	}()
 
 	// build ranking index
-	if w.CollaborativeFilteringModel != nil && !w.CollaborativeFilteringModel.Invalid() && w.matrixFactorization == nil {
-		startTime := time.Now()
-		log.Logger().Info("start building ranking index")
-		itemIndex := w.CollaborativeFilteringModel.GetItemIndex()
-		matrixFactorization := logics.NewMatrixFactorization(time.Now())
-		for i := int32(0); i < itemIndex.Count(); i++ {
-			if itemId, ok := itemIndex.String(i); ok && itemCache.IsAvailable(itemId) {
-				item, _ := itemCache.Get(itemId)
-				matrixFactorization.Add(item, w.CollaborativeFilteringModel.GetItemFactor(int32(i)))
+	if w.CollaborativeFilteringModel != nil && !w.CollaborativeFilteringModel.Invalid() {
+		w.matrixFactorizationMutex.Lock()
+		if w.matrixFactorization == nil {
+			startTime := time.Now()
+			log.Logger().Info("start building ranking index")
+			itemIndex := w.CollaborativeFilteringModel.GetItemIndex()
+			matrixFactorization := logics.NewMatrixFactorization(time.Now())
+			for i := int32(0); i < itemIndex.Count(); i++ {
+				if itemId, ok := itemIndex.String(i); ok && itemCache.IsAvailable(itemId) {
+					item, _ := itemCache.Get(itemId)
+					matrixFactorization.Add(item, w.CollaborativeFilteringModel.GetItemFactor(int32(i)))
+				}
 			}
+			w.matrixFactorization = matrixFactorization
+			log.Logger().Info("complete building ranking index",
+				zap.Duration("build_time", time.Since(startTime)))
 		}
-		w.matrixFactorization = matrixFactorization
-		log.Logger().Info("complete building ranking index",
-			zap.Duration("build_time", time.Since(startTime)))
+		w.matrixFactorizationMutex.Unlock()
 	}
 
 	// recommendation
@@ -605,9 +613,12 @@ func (w *Worker) Recommend(users []data.User) {
 		collaborativeUsed := false
 		if w.Config.Recommend.Offline.EnableColRecommend && w.CollaborativeFilteringModel != nil && !w.CollaborativeFilteringModel.Invalid() {
 			if userIndex := w.CollaborativeFilteringModel.GetUserIndex().Id(userId); w.CollaborativeFilteringModel.IsUserPredictable(int32(userIndex)) {
+				w.matrixFactorizationMutex.RLock()
+				matrixFactorization := w.matrixFactorization
+				w.matrixFactorizationMutex.RUnlock()
 				var recommend map[string][]string
 				var usedTime time.Duration
-				recommend, usedTime, err = w.collaborativeRecommendHNSW(w.matrixFactorization, userId, excludeSet, itemCache)
+				recommend, usedTime, err = w.collaborativeRecommendHNSW(matrixFactorization, userId, excludeSet, itemCache)
 				if err != nil {
 					log.Logger().Error("failed to recommend by collaborative filtering",
 						zap.String("user_id", userId), zap.Error(err))
@@ -851,6 +862,9 @@ func (w *Worker) Recommend(users []data.User) {
 }
 
 func (w *Worker) collaborativeRecommendHNSW(rankingIndex *logics.MatrixFactorization, userId string, excludeSet mapset.Set[string], itemCache *ItemCache) (map[string][]string, time.Duration, error) {
+	if rankingIndex == nil {
+		return nil, 0, errors.New("ranking index is not initialized")
+	}
 	ctx := context.Background()
 	userIndex := w.CollaborativeFilteringModel.GetUserIndex().Id(userId)
 	localStartTime := time.Now()
